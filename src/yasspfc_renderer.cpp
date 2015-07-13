@@ -68,7 +68,7 @@ void main()\n\
 {\n\
 	gl_Position = u_proj * vec4(a_pos, 0, 1);\n\
 	v_uv = a_uv * u_tex_size;\n\
-	blend = a_blend * a_blend_rate;\n\
+	blend = vec4(a_blend.rgb * a_blend_rate, a_blend.a);\n\
 	blend_rate_inv = 1 - a_blend_rate;\n\
 }";
 
@@ -101,6 +101,21 @@ void main()\n\
 	gl_FragColor = texture2D(u_tex, v_uv) * u_color;\n\
 }";
 
+static const char* s_fs_ColorP = "\
+#ifdef GL_ES\n\
+precision lowp float;\n\
+#endif \n\
+varying vec2 v_uv;\n\
+\n\
+uniform sampler2D u_tex;\n\
+uniform vec4 u_color;\n\
+\n\
+void main()\n\
+{\n\
+	vec4 t = texture2D(u_tex, v_uv);\n\
+	gl_FragColor = vec4(t * u_color.rgb, t.a) * u_color.a;\n\
+}";
+
 static const char* s_fs_blend = "\
 #ifdef GL_ES\n\
 precision lowp float;\n\
@@ -124,26 +139,30 @@ void main()\n\
 	vec4 t = texture2D(u_tex, v_uv);\n\
 \n\
 #if SS_BLEND == 0\n\
-	vec3 c = (t.rgb * blend_rate_inv) + blend.rgb;\n\
+	vec3 c1 = t.rgb * blend_rate_inv;\n\
+	vec3 c2 = blend.rgb;\n\
 #elif SS_BLEND == 1\n\
-	vec3 c = (t.rgb * blend_rate_inv) + (blend.rgb * t.rgb);\n\
+	vec3 c1 = t.rgb * blend_rate_inv;\n\
+	vec3 c2 = blend.rgb * t.rgb;\n\
 #elif SS_BLEND == 2\n\
-	vec3 c = t.rgb + blend.rgb;\n\
+	vec3 c1 = t.rgb;\n\
+	vec3 c2 = blend.rgb;\n\
 #else\n\
-	vec3 c = t.rgb - blend.rgb;\n\
+	vec3 c1 = t.rgb;\n\
+	vec3 c2 = - blend.rgb;\n\
 #endif\n\
 \n\
 #if SS_PMA\n\
 #if SS_COLOR\n\
-	gl_FragColor = vec4(c * u_color.rgb, t.a) * (blend.a * u_color.a);\n\
+	gl_FragColor = vec4((c1 + c2 * t.a) * u_color.rgb, t.a) * (blend.a * u_color.a);\n\
 #else\n\
-	gl_FragColor = vec4(c, t.a) * blend.a;\n\
+	gl_FragColor = vec4(c1 + c2 * t.a, t.a) * blend.a;\n\
 #endif\n\
 #else\n\
 #if SS_COLOR\n\
-	gl_FragColor = vec4(c, t.a * blend.a) * u_color;\n\
+	gl_FragColor = vec4(c1 + c2, t.a * blend.a) * u_color;\n\
 #else\n\
-	gl_FragColor = vec4(c, t.a * blend.a);\n\
+	gl_FragColor = vec4(c1 + c2, t.a * blend.a);\n\
 #endif\n\
 #endif\n\
 }";
@@ -430,16 +449,17 @@ struct SSShaderProgram {
 			return;
 
 		GLfloat v[4];
-		GLfloat r;
+		GLfloat r, rr;
 
-		r = (1.0f / 255.0f) * rate;
-		v[0] = ((color >> 24) & 0xff) * r;
-		v[1] = ((color >> 16) & 0xff) * r;
-		v[2] = ((color >>  8) & 0xff) * r;
+		r = (1.0f / 255.0f);
+		rr = r * rate;
+		v[0] = ((color >> 24) & 0xff) * rr;
+		v[1] = ((color >> 16) & 0xff) * rr;
+		v[2] = ((color >>  8) & 0xff) * rr;
 		v[3] = ((color >>  0) & 0xff) * r;
 		glUniform4fv(m_uniform_blend, 1, v);
 
-		glUniform1f(m_uniform_blend_rate_inv, -rate);
+		glUniform1f(m_uniform_blend_rate_inv, 1 - rate);
 	}
 };
 
@@ -448,7 +468,7 @@ struct SSShaderProgram {
 static SSVertexShader s_va_Normal;
 static SSVertexShader s_va_Blend;
 
-#define PROGRAM_NUM (2 + 32)
+#define PROGRAM_NUM (3 + 32)
 static bool s_init_programs;
 static SSShaderProgram s_programs[PROGRAM_NUM];
 
@@ -525,8 +545,9 @@ static void setup_shader_table()
 
 	s_programs[0].init(&s_va_Normal, s_fs_Normal, 0, 0);
 	s_programs[1].init(&s_va_Normal, s_fs_Color, 0, PROGRAM_OPTION_COLOR);
+	s_programs[2].init(&s_va_Normal, s_fs_ColorP, 0, PROGRAM_OPTION_COLOR);
 
-	int i = 2;
+	int i = 3;
 	for(int mode = 0; mode < 4; mode++, i += 8){
 		s_programs[i + 0].init(&s_va_Normal, s_fs_blend, mode, PROGRAM_OPTION_BLEND);
 		s_programs[i + 1].init(&s_va_Normal, s_fs_blend, mode, PROGRAM_OPTION_BLEND | PROGRAM_OPTION_COLOR);
@@ -583,20 +604,28 @@ void SSRenderer::flush()
 		switch(cur->color_blend){
 		case SSPartBlendNone:
 			program_index = 0;
+			if(~cur->color){
+				program_index++;
+				if(pma)
+					program_index++;
+			}
 			break;
+
 		case SSPartBlendSingle:
-			program_index = 2 + cur->color_blend_type * 8 + (pma ? 4 : 0) + 0;
+			program_index = 3 + cur->color_blend_type * 8 + (pma ? 4 : 0) + 0;
+			if(~cur->color)
+				program_index++;
 			break;
+
 		case SSPartBlendPerVertex:
-			program_index = 2 + cur->color_blend_type * 8 + (pma ? 4 : 0) + 2;
+			program_index = 3 + cur->color_blend_type * 8 + (pma ? 4 : 0) + 2;
+			if(~cur->color)
+				program_index++;
 			break;
 		}
-		if(~cur->color)
-			program_index++;
-
-		program = &s_programs[program_index];
 
 		//CCASSERT(program_index < PROGRAM_NUM, "");
+		program = &s_programs[program_index];
 	}
 
 	if(s_program != program){
