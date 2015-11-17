@@ -7,22 +7,18 @@ using namespace yasspfc;
 
 TextureLoaderFunc SSGlobal::m_user_tex_loader;
 
-#if COCOS2D_VERSION >= 0x00030000
-cocos2d::Texture2D* SSGlobal::load_texture(const char* base_dir, const char* image_path)
-#else
-cocos2d::CCTexture2D* SSGlobal::load_texture(const char* base_dir, const char* image_path)
-#endif
+YASSPFC_CC_TEXTURE2D* SSGlobal::load_texture(SSBP* ssbp, const char* base_dir, const char* image_path)
 {
 	if(m_user_tex_loader != 0)
-		return m_user_tex_loader(base_dir, image_path);
+		return m_user_tex_loader(ssbp, base_dir, image_path);
 
 #if COCOS2D_VERSION >= 0x00030000
 	cocos2d::TextureCache* tc = cocos2d::Director::getInstance()->getTextureCache();
-	cocos2d::Texture2D* tex;
 #else
 	cocos2d::CCTextureCache* tc = cocos2d::CCTextureCache::sharedTextureCache();
-	cocos2d::CCTexture2D* tex;
 #endif
+	YASSPFC_CC_TEXTURE2D* tex;
+
 	std::string path;
 	if(base_dir != 0){
 		path = base_dir;

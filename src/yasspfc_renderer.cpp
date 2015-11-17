@@ -317,7 +317,6 @@ struct SSShaderProgram {
 		GLuint fragment_shader;
 		GLuint program;
 		GLint linked;
-		
 
 		m_vertex_shader->compile();
 		vertex_shader = m_vertex_shader->handle();
@@ -337,7 +336,6 @@ struct SSShaderProgram {
 		}else{
 			compile_shader(fragment_shader, 0, fragment_shader_source);
 		}
-
 
 		program = glCreateProgram();
 		glAttachShader(program, vertex_shader);
@@ -408,11 +406,7 @@ struct SSShaderProgram {
 		}
 	}
 
-#if COCOS2D_VERSION >= 0x00030000
-	void set_common_uniform(const cocos2d::Mat4* transform)
-#else
-	void set_common_uniform(const kmMat4* transform)
-#endif
+	void set_common_uniform(const YASSPFC_CC_MAT4* transform)
 	{
 #if COCOS2D_VERSION >= 0x00030000
 		glUniformMatrix4fv(m_uniform_projection, 1, GL_FALSE, transform->m);
@@ -505,11 +499,7 @@ enum {
 struct RenderState {
 	uint32_t dirty;
 	GLuint color;
-#if COCOS2D_VERSION >= 0x00030000
-	cocos2d::Texture2D* texture;
-#else
-	cocos2d::CCTexture2D* texture;
-#endif
+	YASSPFC_CC_TEXTURE2D* texture;
 	uint8_t color_blend;
 	uint8_t color_blend_type;
 	uint8_t primitive_type;
@@ -520,19 +510,69 @@ struct RenderState {
 
 
 static char* s_vertex_buffer;
-static GLubyte* s_index_buffer;
+static GLubyte* s_index_buffer_strip;
+static GLubyte* s_index_buffer_triangle;
 static RenderState s_render_state[2];// 0 next, 1 current
 static int32_t s_draw_count;
 static void* s_vertex_buffer_cur;
-#if COCOS2D_VERSION >= 0x00030000
-static const cocos2d::Mat4* s_transform;
-#else
-static const kmMat4* s_transform;
-#endif
+static const YASSPFC_CC_MAT4* s_transform;
 static SSShaderProgram* s_program;
 static GLenum s_blend_src_factor;
 static GLenum s_blend_dst_factor;
 static GLenum s_blend_equation;
+
+static void setup_index_buffer_strip()
+{
+	GLubyte* ib;
+	GLubyte vertex_index;
+	int32_t n;
+
+	ib = s_index_buffer_strip;
+	vertex_index = 0;
+	n = MAX_BATCH_COUNT;
+	while(n--){
+		ib[0] = vertex_index + 0;
+		ib[1] = vertex_index + 1;
+		ib[2] = vertex_index + 2;
+		ib[3] = vertex_index + 3;
+		ib[4] = vertex_index + 3;
+		ib[5] = vertex_index + 4;
+
+		ib += 6;
+		vertex_index += 4;
+	}
+}
+
+static void setup_index_buffer_triangle()
+{
+	GLubyte* ib;
+	GLubyte vertex_index;
+	int32_t n;
+
+	ib = s_index_buffer_triangle;
+	vertex_index = 0;
+	n = MAX_BATCH_COUNT;
+	while(n--){
+		ib[0] = vertex_index + 4;
+		ib[1] = vertex_index + 2;
+		ib[2] = vertex_index + 0;
+
+		ib[3] = vertex_index + 4;
+		ib[4] = vertex_index + 0;
+		ib[5] = vertex_index + 1;
+
+		ib[6] = vertex_index + 4;
+		ib[7] = vertex_index + 1;
+		ib[8] = vertex_index + 3;
+
+		ib[9] = vertex_index + 4;
+		ib[10] = vertex_index + 3;
+		ib[11] = vertex_index + 2;
+
+		ib += 12;
+		vertex_index += 5;
+	}
+}
 
 static void setup_shader_table()
 {
@@ -579,7 +619,10 @@ void SSRenderer::unload_shaders()
 
 	if(s_vertex_buffer != 0){
 		free(s_vertex_buffer);
-		free(s_index_buffer);
+		s_vertex_buffer = 0;
+
+		free(s_index_buffer_strip);
+		free(s_index_buffer_triangle);
 	}
 }
 
@@ -602,7 +645,7 @@ void SSRenderer::flush()
 		bool pma = cur->texture->hasPremultipliedAlpha();
 
 		switch(cur->color_blend){
-		case SSPartBlendNone:
+		default://case SSPartBlendNone:
 			program_index = 0;
 			if(~cur->color){
 				program_index++;
@@ -624,7 +667,7 @@ void SSRenderer::flush()
 			break;
 		}
 
-		//CCASSERT(program_index < PROGRAM_NUM, "");
+		assert(program_index < PROGRAM_NUM);
 		program = &s_programs[program_index];
 	}
 
@@ -662,11 +705,7 @@ void SSRenderer::flush()
 	}
 
 	if(dirty & (DirtyTexture | DirtyProgram)){
-#if COCOS2D_VERSION >= 0x00030000
-		cocos2d::Size size = cur->texture->getContentSizeInPixels();
-#else
-		cocos2d::CCSize size = cur->texture->getContentSizeInPixels();
-#endif
+		YASSPFC_CC_SIZE size = cur->texture->getContentSizeInPixels();
 		GLfloat inv_size[2];
 		inv_size[0] = 1 / size.width;
 		inv_size[1] = 1 / size.height;
@@ -691,7 +730,7 @@ void SSRenderer::flush()
 		pma = cur->texture->hasPremultipliedAlpha();
 
 		switch(cur->blend){
-		case SSPartBlendTypeMix:
+		default://case SSPartBlendTypeMix:
 			if(pma){
 				s = GL_ONE;
 				d = GL_ONE_MINUS_SRC_ALPHA;
@@ -751,65 +790,20 @@ void SSRenderer::flush()
 	switch(cur->primitive_type){
 	case PrimitiveTypeStrip:
 	{
-		GLubyte* ib;
-		GLubyte vertex_index;
-		int32_t primitive_count;
 		GLsizei element_count;
 
-		ib = s_index_buffer;
-		vertex_index = 0;
-		primitive_count = draw_count;
-		while(primitive_count--){
-			ib[0] = vertex_index + 0;
-			ib[1] = vertex_index + 1;
-			ib[2] = vertex_index + 2;
-			ib[3] = vertex_index + 3;
-			ib[4] = vertex_index + 3;
-			ib[5] = vertex_index + 4;
-
-			ib += 6;
-			vertex_index += 4;
-		}
-
 		element_count = draw_count * 6 - 2;
-		glDrawElements(GL_TRIANGLE_STRIP, element_count, GL_UNSIGNED_BYTE, s_index_buffer);
+		glDrawElements(GL_TRIANGLE_STRIP, element_count, GL_UNSIGNED_BYTE, s_index_buffer_strip);
 		vertex_count = 4 * draw_count;
 	}
 		break;
 
 	case PrimitiveTypeTriangle:
 	{
-		GLubyte* ib;
-		GLubyte vertex_index;
-		int32_t primitive_count;
 		GLsizei element_count;
 
-		ib = s_index_buffer;
-		vertex_index = 0;
-		primitive_count = draw_count;
-		while(primitive_count--){
-			ib[0] = vertex_index + 4;
-			ib[1] = vertex_index + 2;
-			ib[2] = vertex_index + 0;
-
-			ib[3] = vertex_index + 4;
-			ib[4] = vertex_index + 0;
-			ib[5] = vertex_index + 1;
-
-			ib[6] = vertex_index + 4;
-			ib[7] = vertex_index + 1;
-			ib[8] = vertex_index + 3;
-
-			ib[9] = vertex_index + 4;
-			ib[10] = vertex_index + 3;
-			ib[11] = vertex_index + 2;
-
-			ib += 12;
-			vertex_index += 5;
-		}
-
 		element_count = draw_count * 12;
-		glDrawElements(GL_TRIANGLES, element_count, GL_UNSIGNED_BYTE, s_index_buffer);
+		glDrawElements(GL_TRIANGLES, element_count, GL_UNSIGNED_BYTE, s_index_buffer_triangle);
 		vertex_count = 12 * draw_count;
 	}
 		break;
@@ -839,16 +833,15 @@ void SSRenderer::flush_n()
 	s_render_state[1] = s_render_state[0];
 }
 
-#if COCOS2D_VERSION >= 0x00030000
-void SSRenderer::begin(const cocos2d::Mat4& transform)
-#else
-void SSRenderer::begin(const kmMat4& transform)
-#endif
+void SSRenderer::begin(const YASSPFC_CC_MAT4& transform)
 {
 	if(s_vertex_buffer == 0){
 		s_vertex_buffer = (char*)malloc(sizeof(VertexUnion) * 5 * MAX_BATCH_COUNT);
-		s_index_buffer = (GLubyte*)malloc(sizeof(GLubyte) * 12 * MAX_BATCH_COUNT);
+		s_index_buffer_strip = (GLubyte*)malloc(sizeof(GLubyte) * 6 * MAX_BATCH_COUNT);
+		s_index_buffer_triangle = (GLubyte*)malloc(sizeof(GLubyte) * 12 * MAX_BATCH_COUNT);
 
+		setup_index_buffer_strip();
+		setup_index_buffer_triangle();
 		setup_shader_table();
 	}
 
@@ -856,7 +849,7 @@ void SSRenderer::begin(const kmMat4& transform)
 	s_transform = &transform;
 
 	s_vertex_buffer_cur = s_vertex_buffer;
-	memset(s_render_state, 0xff, sizeof(s_render_state));
+	memset(s_render_state, 0xff, sizeof(s_render_state));// a bit dangerous.
 
 	s_program = 0;
 	s_blend_src_factor = GL_SRC_ALPHA;
@@ -900,11 +893,7 @@ void SSRenderer::end()
 	}
 }
 
-#if COCOS2D_VERSION >= 0x00030000
-void SSRenderer::draw(const SSPartState* part_state, cocos2d::Texture2D* texture, uint32_t color)
-#else
-void SSRenderer::draw(const SSPartState* part_state, cocos2d::CCTexture2D* texture, uint32_t color)
-#endif
+void SSRenderer::draw(const SSPartState* part_state)
 {
 	RenderState* next;
 	uint32_t dirty;
@@ -916,7 +905,9 @@ void SSRenderer::draw(const SSPartState* part_state, cocos2d::CCTexture2D* textu
 
 	{
 		uint32_t opacity;
+		uint32_t color;
 
+		color = part_state->color;
 		opacity = part_state->opacity;
 		opacity += (opacity >> 7) & 1;// 0xff -> 0x100
 		opacity = (opacity * (color & 0xff)) >> 8;
@@ -927,9 +918,9 @@ void SSRenderer::draw(const SSPartState* part_state, cocos2d::CCTexture2D* textu
 		}
 	}
 
-	if(texture != next->texture){
+	if(part_state->cell.tex != next->texture){
 		dirty |= DirtyTexture;
-		next->texture = texture;
+		next->texture = part_state->cell.tex;
 	}
 
 	{
@@ -973,7 +964,7 @@ void SSRenderer::draw(const SSPartState* part_state, cocos2d::CCTexture2D* textu
 	{
 		uint8_t blend;
 
-		blend = part_state->blend;
+		blend = part_state->alpha_blend_type;
 		if(blend != next->blend){
 			dirty |= DirtyBlend;
 			next->blend = blend;

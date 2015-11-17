@@ -1,66 +1,9 @@
-#include "yasspfc_anime.h"
+#include "yasspfc.h"
 #include "yasspfc_renderer.h"
+#include "yasspfc_affine.h"
 
 
 using namespace yasspfc;
-
-
-#define SSBP_SIG 0x42505353
-#define SSBP_VER 1
-
-#define PART_FLAG_INVISIBLE         (1 <<  0)
-#define PART_FLAG_FLIP_H            (1 <<  1)
-#define PART_FLAG_FLIP_V            (1 <<  2)
-#define PART_FLAG_CELL_INDEX        (1 <<  3)
-#define PART_FLAG_POSITION_X        (1 <<  4)
-#define PART_FLAG_POSITION_Y        (1 <<  5)
-#define PART_FLAG_POSITION_Z        (1 <<  6)
-#define PART_FLAG_ANCHOR_X          (1 <<  7)
-#define PART_FLAG_ANCHOR_Y          (1 <<  8)
-#define PART_FLAG_ROTATIONX         (1 <<  9)
-#define PART_FLAG_ROTATIONY         (1 << 10)
-#define PART_FLAG_ROTATIONZ         (1 << 11)
-#define PART_FLAG_SCALE_X           (1 << 12)
-#define PART_FLAG_SCALE_Y           (1 << 13)
-#define PART_FLAG_OPACITY           (1 << 14)
-#define PART_FLAG_COLOR_BLEND       (1 << 15)
-#define PART_FLAG_VERTEX_TRANSFORM  (1 << 16)
-#define PART_FLAG_SIZE_X            (1 << 17)
-#define PART_FLAG_SIZE_Y            (1 << 18)
-#define PART_FLAG_U_MOVE            (1 << 19)
-#define PART_FLAG_V_MOVE            (1 << 20)
-#define PART_FLAG_UV_ROTATION       (1 << 21)
-#define PART_FLAG_U_SCALE           (1 << 22)
-#define PART_FLAG_V_SCALE           (1 << 23)
-#define PART_FLAG_BOUNDINGRADIUS    (1 << 24)
-#define PART_FLAG_INSTANCE_KEYFRAME (1 << 25)
-#define PART_FLAG_INSTANCE_START    (1 << 26)
-#define PART_FLAG_INSTANCE_END      (1 << 27)
-#define PART_FLAG_INSTANCE_SPEED    (1 << 28)
-#define PART_FLAG_INSTANCE_LOOP     (1 << 29)
-#define PART_FLAG_INSTANCE_LOOP_FLG (1 << 30)
-
-#define INSTANCE_LOOP_FLAG_INFINITY    (1 << 0)
-#define INSTANCE_LOOP_FLAG_REVERSE     (1 << 1)
-#define INSTANCE_LOOP_FLAG_PINGPONG    (1 << 2)
-#define INSTANCE_LOOP_FLAG_INDEPENDENT (1 << 3)
-
-#define VERTEX_FLAG_LT  (1 << 0)
-#define VERTEX_FLAG_RT  (1 << 1)
-#define VERTEX_FLAG_LB  (1 << 2)
-#define VERTEX_FLAG_RB  (1 << 3)
-#define VERTEX_FLAG_ONE (1 << 4)
-
-#define PARTTYPE_INVALID -1
-#define PARTTYPE_NULL     0
-#define PARTTYPE_NORMAL   1
-//#define PARTTYPE_TEXT     2 unused/reserved
-#define PARTTYPE_INSTANCE 3
-
-#define BLEND_MIX 0
-#define BLEND_MUL 1
-#define BLEND_ADD 2
-#define BLEND_SUB 3
 
 
 void SSAnime::release_part()
@@ -111,7 +54,7 @@ void SSAnime::parse_part()
 			m_part_state[i].instance = 0;
 		}
 
-		m_part_state[i].blend = (uint8_t)part->alpha_blend_type;
+		m_part_state[i].alpha_blend_type_original = (uint8_t)part->alpha_blend_type;
 	}
 
 	m_instance_num = instance_num;
@@ -129,7 +72,7 @@ void SSAnime::parse_part()
 				m_part_state[i].instance = &m_instance[instance_num];
 
 				name = (const char*)(data + part->rename_offset);
-				m_instance[instance_num].ctor_instance(m_data, &m_part_state[i], name);
+				m_instance[instance_num].ctor_instance(m_player, m_data, &m_part_state[i], name);
 				instance_num++;
 			}
 		}
@@ -158,27 +101,34 @@ void SSAnime::reset()
 	m_loop_flags = INSTANCE_LOOP_FLAG_INDEPENDENT;
 	m_frame_index = 0;
 	m_instance_enabled = false;
+
+	m_end = false;
+    m_first_frame = true;
 }
 
 void SSAnime::dtor()
 {
 	release_part();
-	m_data->release();
 }
 
-void SSAnime::ctor(SSBP* data)
+void SSAnime::ctor(SSPlayer* player, SSBP* data)
 {
-	data->retain();
+	m_player = player;
 	m_data = data;
 
 	reset();
 }
 
-void SSAnime::ctor_instance(SSBP* data, const SSPartState* part_state, const char* reference_name)
+void SSAnime::ctor_instance(SSPlayer* player, SSBP* data, const SSPartState* part_state, const char* reference_name)
 {
-	ctor(data);
+	ctor(player, data);
 	m_parent_part_state = part_state;
 
+	set_anime(reference_name);
+}
+
+void SSAnime::set_anime(const char* reference_name)
+{
 	std::string anime_pack_name;
 	const char* anime_name;
 
@@ -197,7 +147,7 @@ void SSAnime::set_anime(const char* anime_pack_name, const char* anime_name)
 	if(m_anime_pack != 0)
 		reset();
 
-	anime_pack = m_data->find_anime_pack(anime_pack_name);
+	anime_pack = m_data->find_anime_pack(anime_pack_name, 0);
 	if(anime_pack == 0)
 		return;
 
@@ -208,7 +158,7 @@ void SSAnime::set_anime(const SSBPAnimePack* anime_pack, const char* anime_name)
 {
 	const SSBPAnime* anime;
 
-	anime = m_data->find_anime(anime_pack, anime_name);
+	anime = m_data->find_anime(anime_pack, anime_name, 0);
 	if(anime == 0)
 		return;
 
@@ -219,61 +169,8 @@ void SSAnime::set_anime(const SSBPAnimePack* anime_pack, const char* anime_name)
 
 	parse_part();
 
-	set_frame(m_start_frame_index);
+	//set_frame(m_start_frame_index);
 }
-
-struct yasspfc::SSFrameData {
-	uint32_t flags;
-	int16_t part_index;
-	int16_t cell_index;
-
-	int16_t x;
-	int16_t y;
-	float anchor_x;
-	float anchor_y;
-	float rotation_z;
-	float scale_x;
-	float scale_y;
-	float size_x;
-	float size_y;
-
-	float uv_move_x;
-	float uv_move_y;
-	float uv_rotation;
-	float uv_scale_x;
-	float uv_scale_y;
-
-	int16_t vt_lt_x;
-	int16_t vt_lt_y;
-	int16_t vt_lb_x;
-	int16_t vt_lb_y;
-	int16_t vt_rt_x;
-	int16_t vt_rt_y;
-	int16_t vt_rb_x;
-	int16_t vt_rb_y;
-
-	uint8_t opacity;
-	uint8_t color_blend_type;
-	uint8_t color_blend_vertex_flags;
-	// pad
-
-	SSColor lt_color;
-	float lt_color_blend_rate;
-	SSColor lb_color;
-	float lb_color_blend_rate;
-	SSColor rt_color;
-	float rt_color_blend_rate;
-	SSColor rb_color;
-	float rb_color_blend_rate;
-
-	int16_t instance_key_frame_index;
-	int16_t instance_start_frame_index;
-	int16_t instance_end_frame_index;
-	// pad
-	float instance_time_scale;
-	int16_t instance_loop_num;
-	int16_t instance_loop_flags;
-};
 
 void SSAnime::extract_frame_data(
 	SSStream16& strm,
@@ -499,20 +396,15 @@ static void make_center(SSPartState* part_state)
 			part_state->lt.color_blend_rate + 
 			part_state->lb.color_blend_rate + 
 			part_state->rt.color_blend_rate +
-			part_state->rb.color_blend_rate) * 0.25;
+			part_state->rb.color_blend_rate) * 0.25f;
 	}
 }
 
 void SSAnime::update_part(const SSFrameData& frame)
 {
 	uint32_t flags;
-	const char* data;
-	const SSBPHeader* header;
 	SSPartState* part_state;
 	bool need_center;
-
-	data = m_data->ptr();
-	header = (const SSBPHeader*)data;
 
 	part_state = &m_part_state[frame.part_index];
 
@@ -521,34 +413,19 @@ void SSAnime::update_part(const SSFrameData& frame)
 	if(flags & PART_FLAG_INVISIBLE)
 		part_state->flags |= SSPartFlagInvisible;
 
+	part_state->color = frame.color;
 	part_state->opacity = frame.opacity;
+	part_state->alpha_blend_type = frame.alpha_blend_type;
 
 	// transform
-#if COCOS2D_VERSION >= 0x00030000
-	part_state->transform = cocos2d::AffineTransformMakeIdentity();
-	part_state->transform = cocos2d::AffineTransformTranslate(
-		part_state->transform, frame.x / 10.0f, frame.y / 10.0f);
+	part_state->transform.set_translate(frame.x / 10.f, frame.y / 10.f);
 	if(frame.rotation_z != 0){
 		float rz = CC_DEGREES_TO_RADIANS(frame.rotation_z);
-		part_state->transform = cocos2d::AffineTransformRotate(part_state->transform, rz);
+		part_state->transform.rotate(rz);
 	}
 	if(frame.scale_x != 1.f || frame.scale_y != 1.f){
-		part_state->transform = cocos2d::AffineTransformScale(part_state->transform,
-		frame.scale_x, frame.scale_y);
+		part_state->transform.scale(frame.scale_x, frame.scale_y);
 	}
-#else
-	part_state->transform = cocos2d::CCAffineTransformMakeIdentity();
-	part_state->transform = cocos2d::CCAffineTransformTranslate(
-		part_state->transform, frame.x / 10.0f, frame.y / 10.0f);
-	if(frame.rotation_z != 0){
-		float rz = CC_DEGREES_TO_RADIANS(frame.rotation_z);
-		part_state->transform = cocos2d::CCAffineTransformRotate(part_state->transform, rz);
-	}
-	if(frame.scale_x != 1.f || frame.scale_y != 1.f){
-		part_state->transform = cocos2d::CCAffineTransformScale(part_state->transform,
-		frame.scale_x, frame.scale_y);
-	}
-#endif
 
 	part_state->cell_index = frame.cell_index;
 	if(frame.cell_index < 0){
@@ -567,6 +444,7 @@ void SSAnime::update_part(const SSFrameData& frame)
 		return;// NULL or Instance part.
 	}
 
+    m_player->get_cell(part_state->cell_index, &part_state->cell);
 	update_part_uv(frame, part_state);
 
 	need_center = false;
@@ -640,43 +518,21 @@ void SSAnime::update_part(const SSFrameData& frame)
 
 void SSAnime::update_part_uv(const SSFrameData& frame, SSPartState* part_state)
 {
-	const SSBPCell* cell;
 	float x, y, w, h;
-#if COCOS2D_VERSION >= 0x00030000
-	cocos2d::Size tex_size;
-#else
-	cocos2d::CCSize tex_size;
-#endif
+	YASSPFC_CC_SIZE tex_size;
 	SSUV p0, p1, p2, p3;
 
-	{
-		const char* data;
-		const SSBPHeader* header;
-		const SSBPCellMap* cell_map;
-#if COCOS2D_VERSION >= 0x00030000
-		cocos2d::Texture2D* tex;
-#else
-		cocos2d::CCTexture2D* tex;
-#endif
+	if(part_state->cell.tex == 0)
+		return;
 
-		data = m_data->ptr();
-		header = (const SSBPHeader*)data;
-		cell = (const SSBPCell*)(m_data->ptr() + header->cell_offset) + frame.cell_index;
-		cell_map = (const SSBPCellMap*)(data + cell->cell_map_offset);
-		tex = m_data->get_texture(cell_map->index);
-		if(tex == 0){
-			return;
-		}
-		tex_size = tex->getContentSizeInPixels();
-	}
-
+	tex_size = part_state->cell.tex->getContentSizeInPixels();
 
 	{
 		float m = frame.uv_move_x;
 		float s = frame.uv_scale_x;
 
-		x = cell->x;
-		w = cell->width;
+		x = part_state->cell.x;
+		w = part_state->cell.width;
 		if(m != 0.f)
 			x += m * tex_size.width;
 		if(s != 1.f){
@@ -688,8 +544,8 @@ void SSAnime::update_part_uv(const SSFrameData& frame, SSPartState* part_state)
 		float m = frame.uv_move_y;
 		float s = frame.uv_scale_y;
 
-		y = cell->y;
-		h = cell->height;
+		y = part_state->cell.y;
+		h = part_state->cell.height;
 		if(m != 0.f)
 			y += m * tex_size.height;
 		if(s != 1.f){
@@ -808,83 +664,19 @@ void SSAnime::update_transform()
 
 		if(part->parent_index < 0){
 			if(m_parent_part_state != 0){
-#if COCOS2D_VERSION >= 0x00030000
-				m_part_state[i].transform = cocos2d::AffineTransformConcat(
-					m_part_state[i].transform,
-					m_parent_part_state->transform);
-#else
-				m_part_state[i].transform = cocos2d::CCAffineTransformConcat(
-					m_part_state[i].transform,
-					m_parent_part_state->transform);
-#endif
+				m_part_state[i].transform.concat(&m_parent_part_state->transform);
 			}
 		}else{
-#if COCOS2D_VERSION >= 0x00030000
-			m_part_state[i].transform = cocos2d::AffineTransformConcat(
-				m_part_state[i].transform,
-				m_part_state[part->parent_index].transform);
-#else
-			m_part_state[i].transform = cocos2d::CCAffineTransformConcat(
-				m_part_state[i].transform,
-				m_part_state[part->parent_index].transform);
-#endif
+			m_part_state[i].transform.concat(&m_part_state[part->parent_index].transform);
 		}
 
-#if COCOS2D_VERSION >= 0x00030000
-		cocos2d::Point pos;
-#else
-		cocos2d::CCPoint pos;
-#endif
-		pos.x = part_state->lt.x;
-		pos.y = part_state->lt.y;
-#if COCOS2D_VERSION >= 0x00030000
-		pos = cocos2d::PointApplyAffineTransform(pos, part_state->transform);
-#else
-		pos = cocos2d::CCPointApplyAffineTransform(pos, part_state->transform);
-#endif
-		part_state->lt.x = (int16_t)pos.x;
-		part_state->lt.y = (int16_t)pos.y;
-
-		pos.x = part_state->lb.x;
-		pos.y = part_state->lb.y;
-#if COCOS2D_VERSION >= 0x00030000
-		pos = cocos2d::PointApplyAffineTransform(pos, part_state->transform);
-#else
-		pos = cocos2d::CCPointApplyAffineTransform(pos, part_state->transform);
-#endif
-		part_state->lb.x = (int16_t)pos.x;
-		part_state->lb.y = (int16_t)pos.y;
-
-		pos.x = part_state->rt.x;
-		pos.y = part_state->rt.y;
-#if COCOS2D_VERSION >= 0x00030000
-		pos = cocos2d::PointApplyAffineTransform(pos, part_state->transform);
-#else
-		pos = cocos2d::CCPointApplyAffineTransform(pos, part_state->transform);
-#endif
-		part_state->rt.x = (int16_t)pos.x;
-		part_state->rt.y = (int16_t)pos.y;
-
-		pos.x = part_state->rb.x;
-		pos.y = part_state->rb.y;
-#if COCOS2D_VERSION >= 0x00030000
-		pos = cocos2d::PointApplyAffineTransform(pos, part_state->transform);
-#else
-		pos = cocos2d::CCPointApplyAffineTransform(pos, part_state->transform);
-#endif
-		part_state->rb.x = (int16_t)pos.x;
-		part_state->rb.y = (int16_t)pos.y;
+		part_state->transform.transform(&part_state->lt.x, &part_state->lt.y);
+		part_state->transform.transform(&part_state->lb.x, &part_state->lb.y);
+		part_state->transform.transform(&part_state->rt.x, &part_state->rt.y);
+		part_state->transform.transform(&part_state->rb.x, &part_state->rb.y);
 
 		if(part_state->flags & SSPartFlagVertexTransform){
-			pos.x = part_state->cc.x;
-			pos.y = part_state->cc.y;
-#if COCOS2D_VERSION >= 0x00030000
-			pos = cocos2d::PointApplyAffineTransform(pos, part_state->transform);
-#else
-			pos = cocos2d::CCPointApplyAffineTransform(pos, part_state->transform);
-#endif
-			part_state->cc.x = (int16_t)pos.x;
-			part_state->cc.y = (int16_t)pos.y;
+			part_state->transform.transform(&part_state->cc.x, &part_state->cc.y);
 		}
 	}
 }
@@ -895,22 +687,38 @@ void SSAnime::update_parts()
 	const int32_t* frame_offset;
 	int16_t part_num;
 	SSFrameData frame_data;
+    uint32_t color;
 
 	data = m_data->ptr();
 	frame_offset = (const int32_t*)(data + m_anime->frame_offset_offset);
 	SSStream16 strm(data + frame_offset[m_frame_index]);
+
+	{
+		const YASSPFC_CC_COLOR3B& c = m_player->getColor();
+		uint32_t r = c.r;
+		uint32_t g = c.g;
+		uint32_t b = c.b;
+		uint32_t a = m_player->getOpacity();
+
+		color = (r << 24) | (g << 16) | (b << 8) | a;
+	}
 
 	part_num = m_anime_pack->part_num;
 	for(int16_t i = 0; i < part_num; i++){
 		extract_frame_data(strm, frame_data);
 
 		m_part_state[i].rendering_order = frame_data.part_index;
+		if(frame_data.part_index > 0){
+			frame_data.color = color;
+			frame_data.alpha_blend_type = m_part_state[frame_data.part_index].alpha_blend_type_original;
+		}
 
+		m_player->pre_update_frame(i, m_frame_index, &frame_data);
 		update_part(frame_data);
 	}
 }
 
-void SSAnime::set_frame(int16_t frame_index)
+void SSAnime::set_frame(bool force_update, int16_t frame_index)
 {
 	m_frame_index = frame_index;
 
@@ -920,12 +728,12 @@ void SSAnime::set_frame(int16_t frame_index)
 	{
 		int16_t n = m_instance_num;
 		for(int16_t i = 0; i < n; i++){
-			m_instance[i].set_frame_instance(m_frame_index);
+			m_instance[i].set_frame_instance(force_update, m_frame_index);
 		}
 	}
 }
 
-void SSAnime::set_frame_abs(int32_t elapse_frame_count)
+void SSAnime::set_frame_abs(bool force_update, int32_t elapse_frame_count)
 {
 	// MEMO: 
 	// max frame: 9999
@@ -937,6 +745,9 @@ void SSAnime::set_frame_abs(int32_t elapse_frame_count)
 	int32_t span;
 	int32_t loop_num;
 	int32_t loop_count;
+
+	if(m_end)
+		return;
 
 	span = m_end_frame_index - m_start_frame_index + 1;
 	loop_num = m_loop_num;
@@ -953,8 +764,10 @@ void SSAnime::set_frame_abs(int32_t elapse_frame_count)
 		int32_t length;
 
 		length = span * loop_num;
-		if(elapse_frame_count >= length)
+		if(elapse_frame_count >= length){
 			elapse_frame_count = length - 1;
+			m_end = true;
+		}
 	}
 
 	m_elapse_frame_count = elapse_frame_count;
@@ -972,11 +785,11 @@ void SSAnime::set_frame_abs(int32_t elapse_frame_count)
 	else
 		frame_index = (int16_t)(m_start_frame_index + elapse_frame_count);
 
-	if(m_frame_index != frame_index)
-		set_frame(frame_index);
+	if(force_update || m_frame_index != frame_index)
+		set_frame(force_update, frame_index);
 }
 
-void SSAnime::set_frame_instance(int32_t parent_frame_index)
+void SSAnime::set_frame_instance(bool force_update, int32_t parent_frame_index)
 {
 	if(!m_instance_enabled)
 		return;
@@ -993,33 +806,41 @@ void SSAnime::set_frame_instance(int32_t parent_frame_index)
 
 	elapse_frame_count = (int32_t)((parent_frame_index - m_key_frame_index) * m_time_scale);
 
-	set_frame_abs(elapse_frame_count);
+	set_frame_abs(force_update, elapse_frame_count);
 }
 
 void SSAnime::update(float dt)
 {
 	const SSBPAnime* anime;
 	float delta_frame;
+    bool force_update;
 
 	anime = (const SSBPAnime*)m_anime;
 	if(anime == 0)
 		return;
 
-	delta_frame = (dt * m_anime->fps * m_time_scale) + m_delta_frame_frac;
-	m_delta_frame_frac = modff(delta_frame, &delta_frame);
+	force_update = m_first_frame;
+	if(force_update){
+		m_first_frame = false;
+		delta_frame = 0;
+		set_frame_abs(true, 0);
+	}else{
+		delta_frame = (dt * m_anime->fps * m_time_scale) + m_delta_frame_frac;
+		m_delta_frame_frac = modff(delta_frame, &delta_frame);
+		if(delta_frame > 0)
+			set_frame_abs(false, m_elapse_frame_count + (int32_t)delta_frame);
+	}
 
-	if(delta_frame > 0)
-		set_frame_abs(m_elapse_frame_count + (int32_t)delta_frame);
 
 	{
 		int16_t num = m_instance_num;
 		for(int16_t i = 0; i < num; i++){
-			m_instance[i].update_instance(delta_frame);
+			m_instance[i].update_instance(force_update, delta_frame);
 		}
 	}
 }
 
-void SSAnime::update_instance(float delta_frame)
+void SSAnime::update_instance(bool force_update, float delta_frame)
 {
 	if(m_anime == 0)
 		return;
@@ -1030,21 +851,26 @@ void SSAnime::update_instance(float delta_frame)
 	if(!(m_loop_flags & INSTANCE_LOOP_FLAG_INDEPENDENT))
 		return;
 
+    if(m_first_frame){
+        m_first_frame = false;
+        delta_frame = 0;
+    }
+
 	delta_frame = (delta_frame * m_time_scale) + m_delta_frame_frac;
 	m_delta_frame_frac = modff(delta_frame, &delta_frame);
 
 	if(delta_frame > 0)
-		set_frame_abs(m_elapse_frame_count + (int32_t)delta_frame);
+		set_frame_abs(force_update, m_elapse_frame_count + (int32_t)delta_frame);
 
 	{
 		int16_t num = m_instance_num;
 		for(int16_t i = 0; i < num; i++){
-			m_instance[i].update_instance(delta_frame);
+			m_instance[i].update_instance(force_update, delta_frame);
 		}
 	}
 }
 
-void SSAnime::draw_parts(uint32_t color)
+void SSAnime::draw_parts()
 {
 	const char* data;
 	const SSBPHeader* header;
@@ -1062,12 +888,6 @@ void SSAnime::draw_parts(uint32_t color)
 	for(int16_t i = 0; i < part_num; i++){
 		int16_t part_index;
 		SSPartState* part_state;
-#if COCOS2D_VERSION >= 0x00030000
-		cocos2d::Texture2D* texture;
-#else
-		cocos2d::CCTexture2D* texture;
-#endif
-		const SSBPCellMap* cell_map;
 
 		part_index = m_part_state[i].rendering_order;
 		part_state = &m_part_state[part_index];
@@ -1077,41 +897,46 @@ void SSAnime::draw_parts(uint32_t color)
 
 		if(part_state->instance != 0){
 			if(part_state->instance->m_instance_enabled)
-				part_state->instance->draw_parts(color);
+				part_state->instance->draw_parts();
 			continue;
 		}
 
 		if(part_state->cell_index < 0)
 			continue;
-
-		cell_map = (const SSBPCellMap*)(data + cells[part_state->cell_index].cell_map_offset);
-		texture = m_data->get_texture(cell_map->index);
-		if(texture == 0)
+		if(part_state->cell.tex == 0)
 			continue;
 
-		SSRenderer::draw(part_state, texture, color);
+		SSRenderer::draw(part_state);
 	}
 }
 
-#if COCOS2D_VERSION >= 0x00030000
-void SSAnime::draw(const cocos2d::Mat4& transform, uint32_t color)
-#else
-void SSAnime::draw(const kmMat4& transform, uint32_t color)
-#endif
+void SSAnime::draw(const YASSPFC_CC_MAT4& transform)
 {
-	if(m_anime == 0)
+	if(m_anime == 0 || m_first_frame)
 		return;
 
 	SSRenderer::begin(transform);
-	draw_parts(color);
+	draw_parts();
 	SSRenderer::end();
 }
 
 
-void SSAnime::set_loop(bool loop)
+void SSAnime::set_loop(int8_t loop)
 {
-	if(loop)
+	if(loop < 0){
 		m_loop_flags |= INSTANCE_LOOP_FLAG_INFINITY;
-	else
+		m_loop_num = 1;
+	}else{
 		m_loop_flags &= ~INSTANCE_LOOP_FLAG_INFINITY;
+		m_loop_num = loop;
+	}
+}
+
+void SSAnime::rewind()
+{
+	m_frame_index = 0;
+	m_elapse_frame_count = 0;
+	m_delta_frame_frac = 0;
+	m_end = false;
+	m_first_frame = true;
 }

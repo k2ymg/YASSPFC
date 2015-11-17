@@ -2,6 +2,7 @@
 #define YASSPFC_PARTSTATE_H
 
 #include "cocos2d.h"
+#include "yasspfc_affine.h"
 
 
 namespace yasspfc {
@@ -44,19 +45,32 @@ struct SSPartVertex {
 	float color_blend_rate;
 };
 
+struct SSPartStateCell {
+    YASSPFC_CC_TEXTURE2D* tex;
+    int16_t x;
+    int16_t y;
+    uint16_t width;
+    uint16_t height;
+};
+
 struct SSPartState {
 	SSAnime* instance;
 
 	uint8_t flags;
-	uint8_t blend;
+	uint8_t alpha_blend_type;
 	uint8_t color_blend;
 	uint8_t color_blend_type;
+    
+    uint32_t color;
 
 	int16_t cell_index;
 	int16_t rendering_order;// i know, i know...
 
+    SSPartStateCell cell;
+
 	uint8_t opacity;
-	// pad[3]
+	uint8_t alpha_blend_type_original;
+    // pad[2]
 
 	SSPartVertex lt;
 	SSPartVertex lb;
@@ -64,11 +78,7 @@ struct SSPartState {
 	SSPartVertex rb;
 	SSPartVertex cc;// center. for the vertex transform
 
-#if COCOS2D_VERSION >= 0x00030000
-	cocos2d::AffineTransform transform;
-#else
-	cocos2d::CCAffineTransform transform;
-#endif
+	yasspfc::Affine transform;
 };
 
 }
